@@ -1,0 +1,209 @@
+---
+title: "tto_datos_1"
+author: "María"
+date: "2024-04-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+######################## TRATAMIENTO DE DATOS PARA OBTENER TABLAS DE FUNCIONALIDAD ###############################
+ 
+```{r, eval= FALSE}
+library(ggplot2)
+library(lattice)
+library(dplyr)
+library(tidyr)
+library(readr)
+```
+1. Filtrado tabla base "TABLE_NORM_SAMPLES_GENECALL_TAX2_KEGG.tab" para eliminar columnas no necesarias y reducir el peso del archivo.
+```{r, eval=FALSE}
+
+setwd("/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica")
+data <- read.delim2("TABLE_NORM_SAMPLES_GENECALL_TAX2__KEGG.tab")
+
+str(data)
+
+```
+Renombro las columnas correspondientes a las muestras para distinguir los tratamientos y elimino las columnas de información que no me interesan. 
+```{r, eval=FALSE}
+colnames(data) <- c("ctg_name", "ctg_length", "AR1", "AR2", "AR3", "AR4", "PI1", "PI2", "PI3", "PI4", "BS1", "BS2", "BS3", "BS4", "bitscore","TAX_BEST","TAX_BEST_genus", "e.val","KEGG")
+
+datos <- subset(data, select = -c(e.val, bitscore, ctg_length, TAX_BEST, ctg_name))
+
+saveRDS(datos, "datos_1.rds")
+
+```
+Conservo las columnas con las abundancias para cada muestra, tax_best_genus y KEGG
+
+```{r, eval=FALSE}
+datos_1 <- readRDS("datos_1.rds")
+
+chr_cols <- c("TAX_BEST_genus", "KEGG")
+
+datos_1[chr_cols] <- lapply(datos_1[chr_cols], as.character) #para transformar en character
+
+# Eliminar corchetes de la columna TAX_BEST_genus en datos_1
+datos_1$TAX_BEST_genus <- gsub("\\[|\\]", "", datos_1$TAX_BEST_genus)
+
+saveRDS(datos_1, "datos_2.rds")
+```
+
+Ahora, para reducir la dimensionalidad de la tabla, vamos a eliminar todas las filas que no tengan un código KEGG asociado. También, cargamos la base de datos KEGG. 
+
+```{r, eval=FALSE}
+
+kegg_tab <- read_delim("kegg_tab.txt", delim = "\t", col_names = TRUE)
+
+```
+
+```{r, eval=FALSE}
+datos_2 <- readRDS("datos_2.rds")
+
+datos_2$KEGG <- as.character(datos_2$KEGG)
+
+datos_3 <- datos_2[datos_2$KEGG != "-", ]
+
+saveRDS(datos_3, "datos_3.rds")
+```
+Con este filtro consigo reducir de 7756883 a 999014 observaciones
+
+Ahora, hay que clasificar en función del KEGG a los diferentes niveles, para ello utilizamos la base de datos contenida en el archivo kegg_tab.txt que hemos cargado previamente. 
+
+```{r, eval= FALSE}
+datos_3 <- readRDS("datos_3.rds")
+datos_3$level1 <- ifelse(datos_3$KEGG %in% kegg_tab$id, kegg_tab$level1[match(datos_3$KEGG, kegg_tab$id)], "")
+
+datos_3$level2 <- ifelse(datos_3$KEGG %in% kegg_tab$id, kegg_tab$level2[match(datos_3$KEGG, kegg_tab$id)], "")
+
+datos_3$level3 <- ifelse(datos_3$KEGG %in% kegg_tab$id, kegg_tab$level3[match(datos_3$KEGG, kegg_tab$id)], "")
+
+datos_3$funcion <- ifelse(datos_3$KEGG %in% kegg_tab$id, kegg_tab$funcion [match(datos_3$KEGG, kegg_tab$id)], "")
+
+
+saveRDS(datos_3, "datos_4.rds")
+```
+
+Una vex obtenida la tabla base con todas las categorías KEGG tengo que separar por cada una de las categorías y calcular las abundancias para cada una de las etiquetas de dichas categorías presente en cada una de las muestras. 
+KEGG LEVEL1 
+
+```{r, eval= FALSE}
+datos_5_conjunto <- readRDS("datos_5.rds")
+datos_5_conjunto$level1 <- as.character(datos_5_conjunto$level1)
+datos_5_level1 <-datos_5_conjunto[datos_5_conjunto$level1 != "", ]
+saveRDS(datos_5_level1, "datos_5_level1.rds")
+```
+
+```{r, eval=FALSE}
+datos_5_level1 <- readRDS("datos_5_level1.rds")
+num_cols <- c("AR1", "AR2", "AR3", "AR4", "PI1", "PI2", "PI3", "PI4", "BS1", "BS2", "BS3", "BS4")
+datos_5_level1[num_cols] <- lapply(datos_5_level1[num_cols], as.numeric) #para transformar en character
+
+columnas_numericas_level1 <- datos_5_level1[, 1:12]
+
+
+resultados_suma_level1 <- aggregate(columnas_numericas_level1, by = list(level1 = datos_5_level1$level1), FUN = sum)
+
+saveRDS(resultados_suma_level1, "sum_kegg_level1.rds")
+
+```
+
+```{r, eval= FALSE}
+#pasar los datos a formato excel
+library(openxlsx)
+sum_kegg_level1 <- readRDS("sum_kegg_level1.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/sum_kegg_level1.xlsx"
+write.xlsx(sum_kegg_level1, ruta)
+```
+
+
+KEGG level 2
+```{r, eval= FALSE}
+datos_5_level2 <- readRDS("datos_5.rds")
+num_cols <- c("AR1", "AR2", "AR3", "AR4", "PI1", "PI2", "PI3", "PI4", "BS1", "BS2", "BS3", "BS4")
+datos_5_level2[num_cols] <- lapply(datos_5_level2[num_cols], as.numeric) 
+
+suma_columnas <- colSums(datos_5_level2[,1:12], na.rm = TRUE)
+suma_columnas #valores para comprobar posteriormente con el sumatorio
+```
+
+```{r, eval= FALSE}
+#para ver las categorías que tengo en la columna level2
+level2_etiquetas <- unique(datos_5_level2$level2)
+level2_etiquetas
+```
+
+```{r, eval=FALSE}
+columnas_numericas_level2 <- datos_5_level2[, 1:12]
+
+
+resultados_suma_level2 <- aggregate(columnas_numericas_level2, by = list(level2 = datos_5_level2$level2), FUN = sum)
+
+saveRDS(resultados_suma_level2, "sum_kegg_level2.rds")
+```
+
+
+
+```{r}
+#pasar los datos a formato excel
+library(openxlsx)
+sum_kegg_level2 <- readRDS("sum_kegg_level2.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/sum_kegg_level2.xlsx"
+write.xlsx(sum_kegg_level2, ruta)
+```
+
+
+Repito lo mismo para el level3 
+
+```{r , eval=FALSE}
+datos_5_level3 <- readRDS("datos_5.rds")
+num_cols <- c("AR1", "AR2", "AR3", "AR4", "PI1", "PI2", "PI3", "PI4", "BS1", "BS2", "BS3", "BS4")
+datos_5_level3[num_cols] <- lapply(datos_5_level3[num_cols], as.numeric) 
+
+columnas_numericas_level3 <- datos_5_level3[, 1:12]
+
+
+resultados_suma_level3 <- aggregate(columnas_numericas_level3, by = list(level3 = datos_5_level3$level3), FUN = sum)
+
+saveRDS(resultados_suma_level3, "sum_kegg_level3.rds")
+
+```
+
+```{r, eval=FALSE}
+#pasar los datos a formato excel
+library(openxlsx)
+sum_kegg_level3 <- readRDS("sum_kegg_level3.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/sum_kegg_level3.xlsx"
+write.xlsx(sum_kegg_level3, ruta)
+```
+
+para function 
+```{r, eval=FALSE}
+datos_4_conjunto <- readRDS("datos_4.rds")
+datos_4_conjunto$funcion <- as.character(datos_4_conjunto$funcion)
+datos_5_funcion <-datos_4_conjunto[datos_4_conjunto$funcion != "", ]
+saveRDS(datos_5_funcion, "datos_5_funcion.rds")
+```
+
+```{r, eval=FALSE}
+datos_5_funcion <- readRDS("datos_5_funcion.rds")
+num_cols <- c("AR1", "AR2", "AR3", "AR4", "PI1", "PI2", "PI3", "PI4", "BS1", "BS2", "BS3", "BS4")
+datos_5_funcion[num_cols] <- lapply(datos_5_funcion[num_cols], as.numeric) #para transformar en character
+
+columnas_numericas_funcion <- datos_5_funcion[, 1:12]
+
+
+resultados_suma_funcion <- aggregate(columnas_numericas_funcion, by = list(funcion = datos_5_funcion$funcion ), FUN = sum)
+
+saveRDS(resultados_suma_funcion , "sum_kegg_funcion.rds")
+
+```
+
+```{r, eval= FALSE}
+#pasar los datos a formato excel
+library(openxlsx)
+sum_kegg_funcion <- readRDS("sum_kegg_funcion.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/sum_kegg_funcion.xlsx"
+write.xlsx(sum_kegg_funcion, ruta)
+```
