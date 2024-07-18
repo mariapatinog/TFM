@@ -1,0 +1,426 @@
+
+################################### ANÁLISIS METAGENÓMICO ###########################################
+
+
+### Para dejar haciendose procesos que tardan mucho tiempo ####
+screen -S ensamblado 
+screen -r ensamblado
+
+
+######## 1) ANÁLISIS DE CALIDAD ######
+
+
+# INSTALACIÓN FASTQC Y MULTIQC
+conda activate khmerEnv1
+conda install -c bioconda fastqc
+conda install -c bioconda multiqc
+
+
+conda activate khmerEnv1
+fastqc *.gz -o /mnt/DATA/maria/0_samples/
+conda deactivate
+
+
+########## 2) INTERLEAVE #############
+
+
+El formato interleaved se utiliza para combinar dos secuencias de lectura (R1,R2) en  un solo archivo en el que cada par de lecturas está representado por una única línea en el archivo. Estas líneas alternas contienen 
+información de cada una de las lecturas solapadas en un orden específico.
+
+# Descompromir los fastq.gz en fastq
+
+for filename in A{01..12}_R1_001.fastq.gz 
+
+do
+    i=$(basename "$filename" _R1_001.fastq.gz)
+    gunzip -c "${i}_R1_001.fastq.gz" > "${i}_R1_001.fastq"
+    gunzip -c "${i}_R2_001.fastq.gz" > "${i}_R2_001.fastq"
+done
+
+# Interleaved
+for file in *_R1_001.fastq
+do
+   sample=${file%%_R1_001.fastq}
+   echo "interleave-reads.py ${sample}_R1_001.fastq ${sample}_R2_001.fastq -o ${sample}.pe.fq"
+done > interleave.sh
+
+#conda activate khmerEnv
+
+cat interleave.sh | parallel
+
+rm -rf *.fastq
+cd ..
+mkdir 2_INTERLEAVED
+cd 0_samples
+mv *.pe.fq ../2_INTERLEAVED
+cd ../2_INTERLEAVED
+
+
+
+######### 3) QUALITY FILTERING ##################
+
+for file in *.pe.fq
+do
+  newfile=${file%%.pe.fq}   
+  echo "fastq_quality_filter -i ${file} -Q33 -q 30 -p 50 -o ${newfile}.pe.qc.fq"
+done > qual_filter.sh
+
+cat qual_filter.sh | parallel
+
+
+########### 4) REMOVE SHORT SEQ ##################
+
+for file in *pe.qc.fq
+do
+  echo "python2.7 filter_fastq_by_length.py ${file} ${file}.cut 50"
+done > remove_short.sh
+
+cat remove_short.sh | parallel
+
+
+##Los archivos de 4_REMOVE_SHORT los utilizaremos posteriormente en el mapping 
+
+
+
+## EXTRACTING PAIRED ENDS AND RENAME FILES AND MERGED FILES ##
+
+EXTRACTING PAIRED ENDS
+
+for file in *.pe.qc.fq.cut
+do
+   echo "extract-paired-reads.py ${file}"
+done > extract_command.sh
+
+cat extract_command.sh | parallel
+
+rm -rf *.cut
+
+RENAME FILES AND MERGING SE FILES
+
+for file in *.pe
+do
+   sample=${file%%.pe.qc.fq.cut.pe}
+   mv ${file} ${sample}.pe.qc.fq
+done
+
+for file in *.se
+do
+   sample=${file%%.pe.qc.fq.cut.se}
+   mv ${file} ${sample}.se.qc.fq
+done
+
+
+
+######### PREPARE FOR ASSEMBLY #############
+
+
+for file in *.pe.qc.fq
+do
+   echo "split-paired-reads.py ${file}"
+done > split_command.sh
+
+cat split_command.sh | parallel
+
+
+
+############# 5) ASSEMBLY ###########
+
+
+mkdir 5_FOR_ASSEMBLY
+
+cat *.1 > 5_FOR_ASSEMBLY/all.pe.qc.fq.1
+cat *.2 > 5_FOR_ASSEMBLY/all.pe.qc.fq.2
+cat *.se.qc.fq > 5_FOR_ASSEMBLY/all.se.qc.fq
+
+
+-SI NO HACEMOS NORMALIZACIÓN DIGITAL:
+megahit -m 0.75 -t 76 -1 all.pe.qc.fq.1 -2 all.pe.qc.fq.2 -r all.se.qc.fq -o all.Megahit.assembly
+
+
+COMPROBACIÓN DE CALIDAD DE ENSAMBLADO
+
+conda activate quast
+
+metaquast /mnt/DATA/maria/5_FOR_ASSEMBLY/all.Megahit.assembly/final.contigs.fa -t 120 --rna-finding --conserved-genes-finding --max-ref-number 20 
+
+
+
+######## 6) GENECALLING - FGS ###########
+
+# FragGeneScan es un programa de bioinformática que se utiliza para predecir genes en secuencias de ADN. 
+
+mkdir 6_FGS
+cd 6_FGS 
+
+LINK CREATION
+ln -s /home/kdanielmorais/bioinformatics/tools/fraggenescan/FragGeneScan1.31/train/ ./
+
+#con el ln creo un enlace en mi directorio de trabajo con el programa Fragggnescan, que está alojado en esa direccion. 
+
+COMMAND
+screen -S FragGeneScan
+FragGeneScan -s /mnt/DATA/maria/5_FOR_ASSEMBLY/all.Megahit.assembly/final.contigs.fa -w 1 -o maria_MG_Megahit_genecalling_fgs -t complete -p 120
+
+#la p son los hilos con los que trabajamos, normalmente ponemos 120 para que vaya más rapido pero podemos poner 75. final.contigs.fa tienen un identificador unico para cada contig. Aqui en este programa le he dicho que en funcion de los contig que me busque genes
+
+
+## 7) MAPPING - ALL SAMPLES ##   tarda una mañana aprox
+
+
+#####todo esto lo pongo en un .sh #####
+
+REF=final.contigs.fa
+reference=${REF%%.fa}
+echo "reference is" ${reference}
+mkdir ${reference}_build
+bowtie2-build /mnt/DATA/maria/5_FOR_ASSEMBLY/all.Megahit.assembly/${REF} ${reference}_build/${reference}.build
+
+conda activate khmerEnv
+
+for file in *.pe.qc.fq  #VAMOS A UTILIZAR LOS ARCHIVOS ANTERIORES AL ENSAMBLADO  
+do
+ sample=${file%%.pe.qc.fq}
+ cat ${sample}.pe.qc.fq ${sample}.se.qc.fq > /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.all.qc.fq  #concatenamos los .pe con .se
+ echo "processing ${sample}...}"
+
+ bowtie2 -p 70 -x /mnt/DATA/maria/7_SAMPLE_MAPPING/final.contigs_build/final.contigs.build -q /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.all.qc.fq -S /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.sam 
+ echo "sam file is done..."
+ 
+ rm -rf /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.all.qc.fq  #borramos los all.qc.fq 
+
+ samtools view -Sb /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.sam > /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.bam
+ echo "bam file is done..."
+
+ rm -rf /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.sam #los SAM solo los queremos para generar los bam, asi que los vamos eliminando para no generar muchos archivos
+
+ samtools view -c -f 4 /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.bam > /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.reads-unmapped.count.txt
+ echo "unmapped reads info done..."   #reads no mapeadas
+
+ samtools view -c -F 4 /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.bam > /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.reads-mapped.count.txt
+ echo "mapped reads info done..." #genero la informacion de los reads mapeadas. 
+
+ samtools sort -o /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.sorted.bam /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.bam
+ echo "bam file was sorted..." #ordeno los archivos bam que es donde esta la informacion del mapeo. 
+
+ rm -rf /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.bam #borramos los archivos bam de entrada, los no ordenados. 
+
+ samtools index /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.sorted.bam  
+ echo "soerted bam file was indexed..."
+
+ samtools idxstats /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.sorted.bam > /mnt/DATA/maria/7_SAMPLE_MAPPING/${sample}.reads.by.contigs.txt 
+
+ echo "${sample} is done..."
+done
+
+################################
+
+python2.7 count-up-mapped-from-results-txt-with-ctg-length.py *.reads.by.contigs.txt #el archivo es el que se obtiene despues del mapeo
+
+wc -l summary-count-mapped.tsv 
+
+grep '>' /mnt/DATA/maria/4_For_Assembly/all.Megahit.assembly/final.contigs.fa | wc -l
+
+
+
+OBTENER ARCHIVO DE COBERTURA (Coverage file)
+
+
+python get_assembly_coverage.py summary-count-mapped.tsv 151 maria_MG_Megahit_assembly_DN_coverage.txt
+
+
+## NORMALISE MAPPING TABLE PER BASE ##
+
+python2.7 normalize-mapping-table-by-read-length-and-ctg-length.py summary-count-mapped.tsv 151 TABLE_normalised.txt
+
+
+## NORMALISE MAPPING TABLE PER BASE ##
+
+
+python2.7 normalize_table_by_columns.py TABLE_normalised.txt 2 1000000 TABLE_normalised_per_sample.txt
+
+cd ..
+mkdir 8_Normalise_mapping
+cd ./7_Sample_mapping
+mv TABLE_normalised.txt TABLE_normalised_per_sample.txt maria_MG_Megahit_assembly_DN_coverage.txt count-up-mapped-from-results-txt-with-ctg-length.py get_assembly_coverage.py normalize-mapping-table-by-read-length-and-ctg-length.py normalize_table_by_columns.py summary-count-mapped.tsv ../8_Normalise_mapping/
+
+
+
+####### 9) ANNOTATION #########
+
+
+cd ..
+mkdir 9_Annotation
+cp ./8_Normalise_mapping/TABLE_normalised_per_sample.txt ./9_Annotation/
+cd ./9_Annotation
+
+
+python2.7 contig_mapping_to_genecall_mapping.py /mnt/DATA/maria/6_FGS/maria_MG_Megahit_genecalling_fgs.faa TABLE_normalised_per_sample.txt
+
+#en nuestra tabla normalizada tenemos contig y abundancia normalizada de ese contig en cada una de nuestras muestras
+
+- Añadimos "#" al nombre de las muestras:
+
+head -1 TABLE_normalised_per_sample.txt_genecall.txt| awk -F'\t' '{printf $1"\t"$2 ;for(i=3; i<=NF; ++i) printf "\t%s", "#"$i }' |  awk -F '\t' '{print $0}' > header.txt
+
+tail -n +2  TABLE_normalised_per_sample.txt_genecall.txt > table.txt
+
+cat header.txt table.txt > TABLE_NORM_SAMPLES_GENECALL.txt
+
+
+## JGI FUNGAL PROTEINS - BIOCEV PC ##  
+
+cd /mnt/DATA/DATABASES/FUNGAL_PROTEINS_JGI/
+cp JGI_FUNGAL_PROTEINS_ANNOTATED_20210312.faa.zip /mnt/DATA/maria/9_Annotation/ #obtener base de datos JGI
+cd /mnt/DATA/maria/9_Annotation/
+unzip JGI_FUNGAL_PROTEINS_ANNOTATED_20210312.faa.zip
+
+diamond blastp -d /mnt/DATA/maria/9_Annotation/JGI_FUNGAL_PROTEINS_ANNOTATED_20210312.faa -q /mnt/DATA/maria/6_FGS/maria_MG_Megahit_genecalling_fgs.faa -e 1E-5 -o genecalling_JGI_FUN_20210312.txt -f 6 -p 70 -b12 -c1
+
+export LANG=en_US.UTF-8   
+export LC_ALL=en_US.UTF-8
+sort -t$'\t' -k1,1 -k12,12gr -k11,11g -k3,3gr genecalling_JGI_FUN_20210312.txt | sort -u -k1,1 --merge > genecalling_JGI_FUN_20210312_best.txt
+
+
+- GENERA DEFINED
+
+diamond blastp -d /mnt/DATA/DATABASES/NCBI_nr_DIAMOND/NCBI_nr_20210225_diamond_GENERA -q /mnt/DATA/maria/6_FGS/maria_MG_Megahit_genecalling_fgs.faa -e 1E-5 -o maria_MG_genecalling_NCBI_nr_PROTEINS_GENERA.txt -f 6 -p 70 -b12 -c1
+
+##/mnt/DATA/DATABASES/NCBI_nr_DIAMOND/NCBI_nr_20210225_diamond_GENERA esta ruta es para llegar a la base de datos GENERA que la tienen descomprimida en el servidor porque es muy grande y tarda mucho en descargarse
+
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+sort -t$'\t' -k1,1 -k12,12gr -k11,11g -k3,3gr maria_MG_genecalling_NCBI_nr_PROTEINS_GENERA.txt | sort -u -k1,1 --merge > genecalling_NCBI_nr_PROTEINS_best.txt
+
+- ADD TAXONOMY TO BLAST RESULTS
+
+python2.7 replace_fungal_annot_by_taxname.py genecalling_JGI_FUN_20210312_best.txt jgi_abr_org_list.txt genecalling_JGI_FUNGAL_PROTEINS_best_reformate.txt
+
+
+- FUNGAL
+awk -F'\t' '{print $2}' genecalling_JGI_FUNGAL_PROTEINS_best_reformate.txt | sort | uniq > FUNGAL_NAMES.txt
+
+- NCBI
+awk -F'\t' '{print $2}' genecalling_NCBI_nr_PROTEINS_best.txt | sort | uniq > ALL_ACCESSIONS.txt
+
+python2.7 get_taxonomy_offline.py ALL_ACCESSIONS.txt /mnt/DATA/DATABASES/NCBI_nr_DIAMOND/ACC2TAXID_nr_current.txt /mnt/DATA/DATABASES/NCBI_nr_DIAMOND/TAXONOMY_TAXID_ALL_fixed.txt taxa_all_accessions.txt 
+
+
+### EN EL CASO DE QUE NO TENGAMOS TAX MISSING
+python2.7 replace_acc_by_sp_from_taxonomy.py genecalling_NCBI_nr_PROTEINS_best.txt taxa_all_accessions.txt genecalling_NCBI_nr_PROTEINS_best_reformat.txt
+
+
+-- COMBINE TAXONOMY TABLES
+--- GET TAXONOMY FOR ALL
+
+python2.7 combine_taxonomy_tables.py FUNGAL_NAMES.txt JGI_TAXA_TAB_2021.txt TAXONOMY_ALL.txt TAX_TAB.tab 
+
+
+python2.7 get_best_hit_by_bitscore_multi.py genecalling_NCBI_nr_PROTEINS_best_reformat.txt genecalling_JGI_FUNGAL_PROTEINS_best_reformate.txt
+
+
+awk -F'\t' '{print $2}' best_of_the_blast.txt | sort | uniq > ALL_TAXA_NAMES.txt
+
+
+python2.7 get_taxonomy_basedonnames.py ALL_TAXA_NAMES.txt TAX_TAB.tab TAX_TAB_FINAL.tab 
+
+
+awk -F'\t' '{print $1"\t"$12"\t"$2""}' best_of_the_blast.txt > TAXONOMY_BEST_OF_SIMPLE.txt
+
+
+
+## FUNCIONALIDAD: 10)SPLIT IT ##
+
+
+python2.7 split_fasta_by_group_size.py /mnt/DATA/maria/6_FGS/maria_MG_Megahit_genecalling_fgs.faa 83000
+#en este paso dividimos los archivos para que sea mas eficiente computacionalmente
+
+cd ..
+mkdir 10_Split 
+cd ./9_Annotation
+mv *.fas ../10_Split
+cd ../10_Split/
+
+
+- KOFAM - KOs
+
+
+Ruta del ejecutable:
+
+#/mnt/DATA1/priscila/kofamKOALA/bin/kofam_scan-1.3.0/exec_annotation
+
+#creo los dos directorios dentro de 10_split: 
+mkdir ko_tbl
+mkdir tmp
+
+#creo un screen -S kofam y pongo a ejecutar este bucle: 
+
+for i in /mnt/DATA1/priscila/kofamKOALA/db/profiles/*.hmm
+do
+  file=${i##*/}
+  ko=${file%%.hmm}
+  echo "hmmsearch --tblout ko_tbl/${ko}.out.txt --noali --cpu 1 -E 1e-5 ${i} /mnt/DATA/maria/6_FGS/maria_MG_Megahit_genecalling_fgs.faa >/dev/null 2>&1"
+done > hmmsearch_kofam.sh
+
+cat hmmsearch_kofam.sh | parallel -j 70 --tmpdir tmp     #este paso es el que tarda mas tiempo
+
+cat ko_tbl/*.out.txt > KOFAM_all.out.txt
+
+python2.7 kegg_multi_from_kofamkoala_raw_filterby_thresholds_evalues.py KOFAM_all.out.txt /mnt/DATA1/priscila/kofamKOALA/db/ko_list hmmsearch_KOFAM_multi_best.txt
+
+
+- KEGG TREE
+
+python2.7 KO_UNIQUE_from_KO_simple.py hmmsearch_KOFAM_multi_best.txt
+
+python2.7 GET_KEGG_ontology_subtable.py kegg_tab.txt hmmsearch_KOFAM_multi_best.txt.unique.txt KOFAM_KOs_tree.tab
+
+
+###############################
+## LINK ANNOTATION TO TABLE  ##
+###############################
+
+gdrive_download 198TDGsV1cBfLEZorb5znFHysG47XEj5t link_simple_table_to_mapping_table.py
+
+cd ../9_Annotation/
+mv TABLE_NORM_SAMPLES_GENECALL.txt /mnt/DATA/maria/10_Split/
+cp TAXONOMY_BEST_OF_SIMPLE.txt /mnt/DATA/maria/10_Split/
+cd ../10_Split 
+
+TABLE="/mnt/DATA/maria/10_Split/TABLE_NORM_SAMPLES_GENECALL.txt"
+
+echo "${TABLE}"
+
+TABLE_BASE=${TABLE%%.${TABLE##*.}}
+
+echo "${TABLE_BASE}"
+
+python2.7 link_simple_table_to_mapping_table.py ${TABLE} TAXONOMY_BEST_OF_SIMPLE.txt TAX_BEST bitscore ${TABLE_BASE}_TAX.txt
+
+Functions processed... 6555900
+Done... used functions: 6555900/6555900
+
+
+python2.7 link_simple_table_to_mapping_table.py ${TABLE_BASE}_TAX.tab hmmsearch_KOFAM_multi_best.txt KEGG e-val ${TABLE_BASE}_TAX_KEGG.tab
+
+
+
+- GENUS TAXONOMY
+
+cd ../9_Annotation/
+cp TAX_TAB_FINAL.tab ../10_Split/
+cd ../10_Split
+
+
+python2.7 add_higher_taxonomy.py ${TABLE_BASE}_TAX_KEGG.tab TAX_TAB_FINAL.tab TAX_BEST ${TABLE_BASE}_TAX2_KEGG.tab TAX_tree_genus.tab
+
+POR SI NO FUNCIONA LA LINEA ANTERIOR: python2.7 add_higher_taxonomy.py TABLE_NORM_SAMPLES_GENECALL_TAX_KEGG.tab TAX_TAB_FINAL.tab TAX_BEST TABLE_NORM_SAMPLES_GENECALL_TAX2_KEGG.tab TAX_tree_genus.tab
+
+
+
+cd ..
+mkdir 11_Final_tables
+cp ./10_Split/CAZy_tree.tab ./11_Final_tables/
+cp ./10_Split/TABLE_NORM_SAMPLES_GENECALL_TAX_KEGG.tab ./11_Final_tables/
+cp ./10_Split/TAX_TAB_FINAL.tab ./11_Final_tables/
+cp ./10_Split/TABLE_NORM_SAMPLES_GENECALL_TAX2_KEGG.tab ./11_Final_tables/
+
