@@ -1,0 +1,134 @@
+---
+title: "tratamiento_datos_taxonomia"
+author: "María"
+date: "2024-05-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=FALSE}
+library(ggplot2)
+library(lattice)
+library(dplyr)
+library(tidyr)
+library(readr)
+```
+
+
+```{r, eval=FALSE}
+datos_2 <- readRDS("datos_2.rds")
+
+datos_2$TAX_BEST_genus <- as.character(datos_2$TAX_BEST_genus)
+
+datos_TAX_filtrados <- datos_2[datos_2$TAX_BEST_genus != "-", ]
+
+```
+
+```{r, eval=FALSE}
+#Cargo la base de datos de la taxonomía
+tax_data <-read_delim("TAX_TAB_FINAL.tab", delim = "\t", col_names = TRUE)
+
+```
+
+
+```{r, eval=FALSE}
+# Crear una nueva columna "DOMAIN", PHYLUM", "CLASS" 
+datos_TAX_filtrados$domain <- ifelse(datos_TAX_filtrados$TAX_BEST_genus %in% tax_data$genus, tax_data$domain[match(datos_TAX_filtrados$TAX_BEST_genus, tax_data$genus)], "")
+
+datos_TAX_filtrados$phylum <- ifelse(datos_TAX_filtrados$TAX_BEST_genus %in% tax_data$genus, tax_data$phylum[match(datos_TAX_filtrados$TAX_BEST_genus, tax_data$genus)], "")
+
+datos_TAX_filtrados$class <- ifelse(datos_TAX_filtrados$TAX_BEST_genus %in% tax_data$genus, tax_data$class[match(datos_TAX_filtrados$TAX_BEST_genus, tax_data$genus)], "")
+
+datos_TAX_filtrados <- subset(datos_TAX_filtrados, select = -c(KEGG))
+
+```
+
+
+
+```{r, eval=FALSE}
+#quito las que se han clasificado como no_hit porque no han tenido clasificación real en una categoria a nivel de genero
+datos_TAX_filtrados <- datos_TAX_filtrados[datos_TAX_filtrados$TAX_BEST_genus != "no_hit", ]
+```
+
+
+
+```{r, eval=FALSE}
+#comprobar que mis columnas van a tener el mismo sumatorio total una vez haga los sumatorios por separado de las diferentes etiquetas en domain. 
+num_cols <- c("AR1", "AR2", "AR3", "AR4", "PI1", "PI2", "PI3", "PI4", "BS1", "BS2", "BS3", "BS4")
+datos_TAX_filtrados[num_cols] <- lapply(datos_TAX_filtrados[num_cols], as.numeric)
+
+suma_columnas <- colSums(datos_TAX_filtrados[,1:12], na.rm = TRUE)
+suma_columnas
+```
+
+Calcular sumatorios para cada una de las etiquetas en la categoría domain para cada una de las muestras. 
+```{r, eval=FALSE}
+#sumar las diferentes columnas en funcion de las etiquetas domain
+columnas_numericas <- datos_TAX_filtrados[, 1:12]
+
+
+resultados_suma_domain <- aggregate(columnas_numericas, by = list(domain = datos_TAX_filtrados$domain), FUN = sum)
+
+saveRDS(resultados_suma_domain, "datos_sumatorio_pordomain.rds")
+
+```
+
+```{r, eval=FALSE}
+#pasar los datos a formato excel
+library(openxlsx)
+datos_sumatorio_pordomain <- readRDS("datos_sumatorio_pordomain.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/datos_sumatorio_pordomain.xlsx"
+write.xlsx(datos_sumatorio_pordomain, ruta)
+```
+
+Calcular sumatorios para cada una de las etiquetas en la categoría phylum para cada una de las muestras. 
+
+```{r, eval=FALSE}
+#comprobación para ver las etiquetas en phylum
+num_etiquetasphylum <- unique(datos_TAX_filtrados$phylum)
+num_etiquetasphylum
+```
+
+```{r, eval=FALSE}
+#sumar las diferentes columnas en funcion de las etiquetas phylum
+columnas_numericas <- datos_TAX_filtrados[, 1:12]
+
+
+resultados_suma_phylum <- aggregate(columnas_numericas, by = list(phylum = datos_TAX_filtrados$phylum), FUN = sum)
+
+saveRDS(resultados_suma_phylum, "datos_sumatorio_porphylum.rds")
+
+```
+
+```{r, eval=FALSE}
+#pasar los datos a formato excel
+library(openxlsx)
+datos_sumatorio_porphylum <- readRDS("datos_sumatorio_porphylum.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/datos_sumatorio_porphylum.xlsx"
+write.xlsx(datos_sumatorio_porphylum, ruta)
+```
+
+
+Calcular sumatorios para cada una de las etiquetas en la categoría genus para cada una de las muestras. 
+
+```{r, eval=FALSE}
+#sumar las diferentes columnas en funcion de las etiquetas genus
+columnas_numericas <- datos_TAX_filtrados[, 1:12]
+
+
+resultados_suma_genus <- aggregate(columnas_numericas, by = list(genus = datos_TAX_filtrados$TAX_BEST_genus), FUN = sum)
+
+saveRDS(resultados_suma_genus, "datos_sumatorio_porgenus.rds")
+
+```
+
+```{r, eval=FALSE}
+#pasar los datos a formato excel
+library(openxlsx)
+datos_sumatorio_porgenus <- readRDS("datos_sumatorio_porgenus.rds")
+ruta <- "/Users/Lab.Enzimologia III/Desktop/MP/Metagenomica/datos_sumatorio_porgenus.xlsx"
+write.xlsx(datos_sumatorio_porgenus, ruta)
+```
